@@ -36,6 +36,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Upload userscript asset
+        run: gh release upload "$TAG_NAME" src/x-save-notion.user.js --clobber
+        env:
+          TAG_NAME: ${{ needs.tagpr.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish release
         run: gh release edit "$TAG_NAME" --draft=false --latest
         env:

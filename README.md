@@ -13,8 +13,10 @@ X (Twitter) のポストをワンクリックで Notion データベースに保
 ## インストール
 
 1. ブラウザに [Tampermonkey](https://www.tampermonkey.net/) をインストール
-2. [`src/x-save-notion.user.js`](src/x-save-notion.user.js) を開き、Tampermonkey でインストール
+2. [インストールリンク](https://github.com/na3shkw/x-save-notion-userscript/releases/latest/download/x-save-notion.user.js) を開き、Tampermonkey でインストール
 3. 後述の「初期設定」を行う
+
+インストール後は Tampermonkey の自動更新機能により、新しいバージョンがリリースされると更新通知が届きます。
 
 ## 初期設定
 
