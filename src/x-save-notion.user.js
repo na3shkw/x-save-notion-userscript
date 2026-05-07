@@ -505,21 +505,25 @@ function extractCardUrls(article) {
     .filter(Boolean);
 }
 
+// innerText だと <a> 内の aria-hidden スパンで URL が複数行に分割されるため DOM を手動ウォークする。
+// t.co リンクのみ href を使用し、ハッシュタグ・メンションは子ノードのテキストをそのまま返す。
+function walkTweetText(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+  if (node.nodeName === 'IMG') return node.getAttribute('alt') || '';
+  if (node.nodeName === 'A') {
+    const href = node.getAttribute('href') || '';
+    return href.startsWith('https://t.co/')
+      ? href
+      : Array.from(node.childNodes).map(walkTweetText).join('');
+  }
+  if (node.nodeName === 'BR') return '\n';
+  return Array.from(node.childNodes).map(walkTweetText).join('');
+}
+
 function extractBody(article) {
   const els = outerOnly(article, '[data-testid="tweetText"]');
   if (!els.length) return '';
-
-  // innerText だと <a> 内の aria-hidden スパンで URL が複数行に分割されるため、
-  // DOM を手動ウォークして <a> は href に置き換える
-  function walk(node) {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
-    if (node.nodeName === 'IMG') return node.getAttribute('alt') || '';
-    if (node.nodeName === 'A') return node.getAttribute('href') || '';
-    if (node.nodeName === 'BR') return '\n';
-    return Array.from(node.childNodes).map(walk).join('');
-  }
-
-  return walk(els[0]);
+  return walkTweetText(els[0]);
 }
 
 function extractImages(article) {
@@ -553,7 +557,7 @@ function extractQuotedPost(article) {
   const textEl = container.querySelector('[data-testid="tweetText"]');
   if (!textEl) return null;
 
-  const body = textEl.innerText || textEl.textContent || '';
+  const body = walkTweetText(textEl);
 
   const authorBlock = container.querySelector('[data-testid="User-Name"]');
   let authorStr = '';
@@ -709,7 +713,7 @@ function buildImageBlocks(fileObjects) {
  * ページコンテンツとして追加するブロック配列を組み立てる。
  * notion_archiver.py の build_tweet_blocks() に対応。
  */
-function buildPageBlocks(postData, imageBlocks, linkUrl) {
+function buildPageBlocks(postData, imageBlocks, linkUrls) {
   const blocks = [];
 
   blocks.push({
@@ -717,7 +721,7 @@ function buildPageBlocks(postData, imageBlocks, linkUrl) {
     type: 'paragraph',
     paragraph: {
       rich_text: [
-        { type: 'text', text: { content: postData.body, link: null } },
+        { type: 'text', text: { content: truncate(postData.body, 2000), link: null } },
       ],
       color: 'default',
     },
@@ -728,7 +732,7 @@ function buildPageBlocks(postData, imageBlocks, linkUrl) {
       object: 'block',
       type: 'quote',
       quote: {
-        rich_text: [{ type: 'text', text: { content: postData.quotedPost } }],
+        rich_text: [{ type: 'text', text: { content: truncate(postData.quotedPost, 2000) } }],
         color: 'default',
       },
     });
@@ -736,11 +740,11 @@ function buildPageBlocks(postData, imageBlocks, linkUrl) {
 
   blocks.push(...imageBlocks);
 
-  if (linkUrl) {
+  for (const url of linkUrls) {
     blocks.push({
       object: 'block',
       type: 'bookmark',
-      bookmark: { caption: [], url: linkUrl },
+      bookmark: { caption: [], url },
     });
   }
 
@@ -889,20 +893,20 @@ async function handleSaveClick(article, button) {
     // カード URL は本文に追記せず bookmark ブロックとして使用する
     // card.wrapper がない場合は本文末尾の URL を抽出して bookmark に使い、ブロック本文からは削除する
     // プロパティの Body には URL を残すため postData.body は変更しない
-    let linkUrl = null;
+    let linkUrls = [];
     let blockBody = postData.body;
     if (postData.cardUrls.length > 0) {
-      linkUrl = await resolveTcoUrl(postData.cardUrls[0]);
+      linkUrls = await Promise.all(postData.cardUrls.map(resolveTcoUrl));
     } else {
       const extracted = extractLinkFromBody(postData.body);
       blockBody = extracted.body;
-      linkUrl = extracted.linkUrl;
+      if (extracted.linkUrl) linkUrls = [extracted.linkUrl];
     }
 
     const blocks = buildPageBlocks(
       { ...postData, body: blockBody },
       imageBlocks,
-      linkUrl,
+      linkUrls,
     );
     const properties = buildNotionProperties(postData);
     await notionCreatePage(properties, blocks);
