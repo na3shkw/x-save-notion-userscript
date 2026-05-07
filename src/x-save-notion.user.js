@@ -503,13 +503,19 @@ function extractCardUrls(article) {
 
 function extractBody(article) {
   const els = outerOnly(article, '[data-testid="tweetText"]');
-  const text = els.length ? els[0].innerText || els[0].textContent || '' : '';
+  if (!els.length) return '';
 
-  const cardUrls = extractCardUrls(article);
-  const urlsToAppend = cardUrls.filter((url) => !text.includes(url));
-  if (urlsToAppend.length === 0) return text;
+  // innerText だと <a> 内の aria-hidden スパンで URL が複数行に分割されるため、
+  // DOM を手動ウォークして <a> は href に置き換える
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeName === 'IMG') return node.getAttribute('alt') || '';
+    if (node.nodeName === 'A') return node.getAttribute('href') || '';
+    if (node.nodeName === 'BR') return '\n';
+    return Array.from(node.childNodes).map(walk).join('');
+  }
 
-  return text ? `${text}\n${urlsToAppend.join('\n')}` : urlsToAppend.join('\n');
+  return walk(els[0]);
 }
 
 function extractImages(article) {
@@ -572,6 +578,7 @@ function scrapeArticle(article) {
     datetime: extractDatetime(article),
     author: author ? `${author.displayName} (${author.username})` : '',
     body: extractBody(article),
+    cardUrls: extractCardUrls(article),
     imageUrls: extractImages(article),
     quotedPost: extractQuotedPost(article),
   };
@@ -779,7 +786,17 @@ async function handleSaveClick(article, button) {
     const { fileObjects, hasFallback } = await uploadImages(
       tweetData.imageUrls,
     );
-    tweetData.body = await resolveTcoUrlsInText(tweetData.body);
+    // 本文の t.co を解決してから、カード URL が既出でなければ末尾に追記
+    let body = await resolveTcoUrlsInText(tweetData.body);
+    if (tweetData.cardUrls.length > 0) {
+      const resolvedCardUrls = await Promise.all(tweetData.cardUrls.map(resolveTcoUrl));
+      for (const cardUrl of resolvedCardUrls) {
+        if (!body.includes(cardUrl)) {
+          body = body ? `${body}\n${cardUrl}` : cardUrl;
+        }
+      }
+    }
+    tweetData.body = body;
     const properties = buildNotionProperties(tweetData, fileObjects);
     await notionCreatePage(properties);
     state.savedIds.add(extractPostId(tweetData.url));
