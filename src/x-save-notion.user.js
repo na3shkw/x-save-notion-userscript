@@ -26,7 +26,7 @@
 
 const LS = {
   TOKEN: 'nx_saver_token',
-  DB_ID: 'nx_saver_db_id',
+  DS_ID: 'nx_saver_ds_id',
   DEBUG: 'nx_saver_debug',
 };
 
@@ -34,18 +34,18 @@ const CONFIG = {
   get NOTION_TOKEN() {
     return GM_getValue(LS.TOKEN, '');
   },
-  get DATABASE_ID() {
-    return GM_getValue(LS.DB_ID, '');
+  get DATA_SOURCE_ID() {
+    return GM_getValue(LS.DS_ID, '');
   },
   get DEBUG() {
     return GM_getValue(LS.DEBUG, false);
   },
-  NOTION_VERSION: '2022-06-28',
+  NOTION_VERSION: '2025-09-03',
   NOTION_API_BASE: 'https://api.notion.com/v1',
 };
 
 function isConfigured() {
-  return CONFIG.NOTION_TOKEN.length > 0 && CONFIG.DATABASE_ID.length > 0;
+  return CONFIG.NOTION_TOKEN.length > 0 && CONFIG.DATA_SOURCE_ID.length > 0;
 }
 
 function showSettingsModal() {
@@ -75,7 +75,7 @@ function showSettingsModal() {
       <label style="display:block;font-size:13px;margin-bottom:4px">Notion Token</label>
       <input id="nx-token-input" type="password" placeholder="secret_..."
         style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:14px">
-      <label style="display:block;font-size:13px;margin-bottom:4px">Database ID</label>
+      <label style="display:block;font-size:13px;margin-bottom:4px">Datasource ID</label>
       <input id="nx-dbid-input" type="text" placeholder="32桁のID"
         style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:14px">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;cursor:pointer">
@@ -99,7 +99,7 @@ function showSettingsModal() {
   document.body.appendChild(overlay);
 
   document.getElementById('nx-token-input').value = GM_getValue(LS.TOKEN, '');
-  document.getElementById('nx-dbid-input').value = GM_getValue(LS.DB_ID, '');
+  document.getElementById('nx-dbid-input').value = GM_getValue(LS.DS_ID, '');
   document.getElementById('nx-debug-input').checked = GM_getValue(
     LS.DEBUG,
     false,
@@ -115,7 +115,7 @@ function showSettingsModal() {
     }
     errorEl.textContent = '';
     GM_setValue(LS.TOKEN, token);
-    GM_setValue(LS.DB_ID, dbId);
+    GM_setValue(LS.DS_ID, dbId);
     GM_setValue(LS.DEBUG, document.getElementById('nx-debug-input').checked);
     overlay.remove();
     state.savedIds.clear();
@@ -269,8 +269,8 @@ async function notionQueryAllPostIds() {
     };
     if (cursor) body.start_cursor = cursor;
     const result = await gmFetch(
-      'POST',
-      `/databases/${CONFIG.DATABASE_ID}/query`,
+      'PATCH',
+      `/data_sources/${CONFIG.DATA_SOURCE_ID}/query`,
       body,
     );
     for (const p of result.results) {
@@ -285,7 +285,7 @@ async function notionQueryAllPostIds() {
 /** Notion DB に新規ページを作成し、{ id } を返す。 */
 function notionCreatePage(properties) {
   return gmFetch('POST', '/pages', {
-    parent: { database_id: CONFIG.DATABASE_ID },
+    parent: { data_source_id: CONFIG.DATA_SOURCE_ID },
     properties,
   });
 }
@@ -441,9 +441,25 @@ function extractAuthor(article) {
   return { displayName, username };
 }
 
+function extractCardUrls(article) {
+  const cards = outerOnly(article, '[data-testid="card.wrapper"]');
+  return cards
+    .map((card) => {
+      const a = card.querySelector('a[href]');
+      return a ? a.getAttribute('href') : null;
+    })
+    .filter(Boolean);
+}
+
 function extractBody(article) {
   const els = outerOnly(article, '[data-testid="tweetText"]');
-  return els.length ? els[0].innerText || els[0].textContent || '' : '';
+  const text = els.length ? els[0].innerText || els[0].textContent || '' : '';
+
+  const cardUrls = extractCardUrls(article);
+  const urlsToAppend = cardUrls.filter((url) => !text.includes(url));
+  if (urlsToAppend.length === 0) return text;
+
+  return text ? `${text}\n${urlsToAppend.join('\n')}` : urlsToAppend.join('\n');
 }
 
 function extractImages(article) {
