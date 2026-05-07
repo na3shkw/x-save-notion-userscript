@@ -628,7 +628,7 @@ async function uploadImages(imageUrls) {
   for (let i = 0; i < imageUrls.length; i++) {
     const url = imageUrls[i];
     const mime = mimeFromUrl(url);
-    const filename = `tweet-img-${i}.${extFromMime(mime)}`;
+    const filename = `post-img-${i}.${extFromMime(mime)}`;
     let fileObj;
 
     try {
@@ -722,7 +722,7 @@ function buildImageBlocks(fileObjects) {
  * ページコンテンツとして追加するブロック配列を組み立てる。
  * notion_archiver.py の build_tweet_blocks() に対応。
  */
-function buildPageBlocks(tweetData, imageBlocks, linkUrl) {
+function buildPageBlocks(postData, imageBlocks, linkUrl) {
   const blocks = [];
 
   blocks.push({
@@ -730,18 +730,18 @@ function buildPageBlocks(tweetData, imageBlocks, linkUrl) {
     type: 'paragraph',
     paragraph: {
       rich_text: [
-        { type: 'text', text: { content: tweetData.body, link: null } },
+        { type: 'text', text: { content: postData.body, link: null } },
       ],
       color: 'default',
     },
   });
 
-  if (tweetData.quotedPost) {
+  if (postData.quotedPost) {
     blocks.push({
       object: 'block',
       type: 'quote',
       quote: {
-        rich_text: [{ type: 'text', text: { content: tweetData.quotedPost } }],
+        rich_text: [{ type: 'text', text: { content: postData.quotedPost } }],
         color: 'default',
       },
     });
@@ -769,31 +769,31 @@ function buildPageBlocks(tweetData, imageBlocks, linkUrl) {
   return blocks;
 }
 
-function buildNotionProperties(tweetData) {
-  const postId = extractPostId(tweetData.url);
+function buildNotionProperties(postData) {
+  const postId = extractPostId(postData.url);
   const props = {
     Title: {
-      title: [{ text: { content: truncate(tweetData.body, 50) } }],
+      title: [{ text: { content: truncate(postData.body, 50) } }],
     },
     URL: {
-      url: tweetData.url,
+      url: postData.url,
     },
     ID: {
       rich_text: [{ text: { content: postId } }],
     },
     Author: {
-      rich_text: [{ text: { content: tweetData.author } }],
+      rich_text: [{ text: { content: postData.author } }],
     },
     Body: {
-      rich_text: [{ text: { content: truncate(tweetData.body, 2000) } }],
+      rich_text: [{ text: { content: truncate(postData.body, 2000) } }],
     },
     QuotedPost: {
-      rich_text: [{ text: { content: tweetData.quotedPost || '' } }],
+      rich_text: [{ text: { content: postData.quotedPost || '' } }],
     },
   };
 
-  if (tweetData.datetime) {
-    props.PostedAt = { date: { start: tweetData.datetime } };
+  if (postData.datetime) {
+    props.PostedAt = { date: { start: postData.datetime } };
   }
 
   return props;
@@ -888,44 +888,42 @@ function createSaveButton(article, isSaved) {
 }
 
 async function handleSaveClick(article, button) {
-  const tweetData = scrapeArticle(article);
-  if (!tweetData) {
+  const postData = scrapeArticle(article);
+  if (!postData) {
     setButtonState(button, 'error');
     return;
   }
 
   setButtonState(button, 'saving');
   try {
-    const { fileObjects, hasFallback } = await uploadImages(
-      tweetData.imageUrls,
-    );
+    const { fileObjects, hasFallback } = await uploadImages(postData.imageUrls);
     const imageBlocks = buildImageBlocks(fileObjects);
 
-    tweetData.body = await resolveTcoUrlsInText(tweetData.body);
+    postData.body = await resolveTcoUrlsInText(postData.body);
 
     // カード URL は本文に追記せず bookmark ブロックとして使用する
     // card.wrapper がない場合は本文末尾の URL を抽出して bookmark に使い、ブロック本文からは削除する
-    // プロパティの Body には URL を残すため tweetData.body は変更しない
+    // プロパティの Body には URL を残すため postData.body は変更しない
     let linkUrl = null;
-    let blockBody = tweetData.body;
-    if (tweetData.cardUrls.length > 0) {
-      linkUrl = await resolveTcoUrl(tweetData.cardUrls[0]);
+    let blockBody = postData.body;
+    if (postData.cardUrls.length > 0) {
+      linkUrl = await resolveTcoUrl(postData.cardUrls[0]);
     } else {
-      const extracted = extractLinkFromBody(tweetData.body);
+      const extracted = extractLinkFromBody(postData.body);
       blockBody = extracted.body;
       linkUrl = extracted.linkUrl;
     }
 
     const blocks = buildPageBlocks(
-      { ...tweetData, body: blockBody },
+      { ...postData, body: blockBody },
       imageBlocks,
       linkUrl,
     );
-    const properties = buildNotionProperties(tweetData);
+    const properties = buildNotionProperties(postData);
     await notionCreatePage(properties, blocks);
-    state.savedIds.add(extractPostId(tweetData.url));
+    state.savedIds.add(extractPostId(postData.url));
     setButtonState(button, hasFallback ? 'saved_partial' : 'saved');
-    log.debug('Saved:', tweetData.url);
+    log.debug('Saved:', postData.url);
     if (hasFallback) {
       showToast(
         '一部の画像のアップロードに失敗しました。外部URL参照で保存されましたが、将来リンク切れの可能性があります。',
@@ -953,7 +951,7 @@ function injectButton(article) {
   article.dataset.notionInjected = '1';
 
   const url = extractTweetUrl(article);
-  if (!url) return; // 広告・プロモーションツイート等
+  if (!url) return; // 広告・プロモーションポスト等
 
   // outerOnly で引用ポスト内の [role="group"] を除外して外側のアクションバーを取得
   const actionBars = outerOnly(article, '[role="group"]');
@@ -1026,7 +1024,7 @@ async function init() {
 
   log.debug('Initializing...');
 
-  // 既存ツイートに先にボタンを注入しておき、ready 後に ✅ を更新する
+  // 既存ポストに先にボタンを注入しておき、ready 後に ✅ を更新する
   startObserver();
   document
     .querySelectorAll('article[data-testid="tweet"]')
