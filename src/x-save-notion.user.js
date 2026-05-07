@@ -319,7 +319,7 @@ async function notionQueryAllPostIds() {
     };
     if (cursor) body.start_cursor = cursor;
     const result = await gmFetch(
-      'PATCH',
+      'POST',
       `/data_sources/${CONFIG.DATA_SOURCE_ID}/query`,
       body,
     );
@@ -335,7 +335,7 @@ async function notionQueryAllPostIds() {
 /** Notion DB に新規ページを作成し、{ id } を返す。 */
 function notionCreatePage(properties) {
   return gmFetch('POST', '/pages', {
-    parent: { data_source_id: CONFIG.DATA_SOURCE_ID },
+    parent: { type: 'data_source_id', data_source_id: CONFIG.DATA_SOURCE_ID },
     properties,
   });
 }
@@ -871,7 +871,7 @@ async function loadSavedIds() {
     log.debug('Loaded', state.savedIds.size, 'saved post IDs');
   } catch (err) {
     log.warn(
-      'Failed to load saved IDs (continuing without duplicate check):',
+      `Failed to load saved IDs (status: ${err?.status ?? '?'}, body: ${err?.body ?? err?.message ?? err}):`,
       err,
     );
   }
