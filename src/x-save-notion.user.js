@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → Notion Saver
 // @namespace    https://github.com/na3shkw/x-save-notion-userscript
-// @version      0.1.0
+// @version      0.2.0
 // @description  X のポストを Notion に保存するユーザースクリプト
 // @author       na3shkw
 // @updateURL    https://github.com/na3shkw/x-save-notion-userscript/releases/latest/download/x-save-notion.user.js
