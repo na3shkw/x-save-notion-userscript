@@ -15,6 +15,7 @@
 // @connect      api.notion.com
 // @connect      pbs.twimg.com
 // @connect      video.twimg.com
+// @connect      t.co
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -26,7 +27,7 @@
 
 const LS = {
   TOKEN: 'nx_saver_token',
-  DB_ID: 'nx_saver_db_id',
+  DS_ID: 'nx_saver_ds_id',
   DEBUG: 'nx_saver_debug',
 };
 
@@ -34,18 +35,18 @@ const CONFIG = {
   get NOTION_TOKEN() {
     return GM_getValue(LS.TOKEN, '');
   },
-  get DATABASE_ID() {
-    return GM_getValue(LS.DB_ID, '');
+  get DATA_SOURCE_ID() {
+    return GM_getValue(LS.DS_ID, '');
   },
   get DEBUG() {
     return GM_getValue(LS.DEBUG, false);
   },
-  NOTION_VERSION: '2022-06-28',
+  NOTION_VERSION: '2025-09-03',
   NOTION_API_BASE: 'https://api.notion.com/v1',
 };
 
 function isConfigured() {
-  return CONFIG.NOTION_TOKEN.length > 0 && CONFIG.DATABASE_ID.length > 0;
+  return CONFIG.NOTION_TOKEN.length > 0 && CONFIG.DATA_SOURCE_ID.length > 0;
 }
 
 function showSettingsModal() {
@@ -75,7 +76,7 @@ function showSettingsModal() {
       <label style="display:block;font-size:13px;margin-bottom:4px">Notion Token</label>
       <input id="nx-token-input" type="password" placeholder="secret_..."
         style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:14px">
-      <label style="display:block;font-size:13px;margin-bottom:4px">Database ID</label>
+      <label style="display:block;font-size:13px;margin-bottom:4px">Datasource ID</label>
       <input id="nx-dbid-input" type="text" placeholder="32桁のID"
         style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:14px">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;cursor:pointer">
@@ -98,34 +99,35 @@ function showSettingsModal() {
 
   document.body.appendChild(overlay);
 
-  document.getElementById('nx-token-input').value = GM_getValue(LS.TOKEN, '');
-  document.getElementById('nx-dbid-input').value = GM_getValue(LS.DB_ID, '');
-  document.getElementById('nx-debug-input').checked = GM_getValue(
-    LS.DEBUG,
-    false,
-  );
+  const tokenInput = document.getElementById('nx-token-input');
+  const dbidInput = document.getElementById('nx-dbid-input');
+  const debugInput = document.getElementById('nx-debug-input');
+  const errorEl = document.getElementById('nx-settings-error');
+  const saveBtn = document.getElementById('nx-save-btn');
+  const cancelBtn = document.getElementById('nx-cancel-btn');
 
-  document.getElementById('nx-save-btn').addEventListener('click', () => {
-    const token = document.getElementById('nx-token-input').value.trim();
-    const dbId = document.getElementById('nx-dbid-input').value.trim();
-    const errorEl = document.getElementById('nx-settings-error');
+  tokenInput.value = GM_getValue(LS.TOKEN, '');
+  dbidInput.value = GM_getValue(LS.DS_ID, '');
+  debugInput.checked = GM_getValue(LS.DEBUG, false);
+
+  saveBtn.addEventListener('click', () => {
+    const token = tokenInput.value.trim();
+    const dbId = dbidInput.value.trim();
     if (!token || !dbId) {
       errorEl.textContent = 'Token と Database ID の両方を入力してください';
       return;
     }
     errorEl.textContent = '';
     GM_setValue(LS.TOKEN, token);
-    GM_setValue(LS.DB_ID, dbId);
-    GM_setValue(LS.DEBUG, document.getElementById('nx-debug-input').checked);
+    GM_setValue(LS.DS_ID, dbId);
+    GM_setValue(LS.DEBUG, debugInput.checked);
     overlay.remove();
     state.savedIds.clear();
     state.ready = false;
     init();
   });
 
-  document
-    .getElementById('nx-cancel-btn')
-    .addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
   });
@@ -255,6 +257,64 @@ function gmFetchBinary(url) {
   });
 }
 
+/** t.co URL をリダイレクト追跡して最終 URL を返す。失敗時は元 URL をそのまま返す。 */
+function resolveTcoUrl(url) {
+  return new Promise((resolve) => {
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      timeout: 8000,
+      onload: (res) => {
+        log.debug(
+          't.co resolve:',
+          url,
+          '→ finalUrl:',
+          res.finalUrl,
+          'status:',
+          res.status,
+        );
+        // finalUrl がリダイレクト先を指している場合はそれを使う
+        if (res.finalUrl && !res.finalUrl.startsWith('https://t.co/')) {
+          resolve(res.finalUrl);
+          return;
+        }
+        // フォールバック: GM がリダイレクトを追跡しなかった場合、meta refresh を解析
+        const meta = res.responseText?.match(
+          /content=["']0;\s*url=([^"'\s>]+)/i,
+        );
+        if (meta?.[1]) {
+          log.debug('t.co resolved via meta refresh:', meta[1]);
+          resolve(meta[1]);
+          return;
+        }
+        log.warn('t.co could not resolve:', url);
+        resolve(url);
+      },
+      onerror: (err) => {
+        log.debug('t.co resolve error:', url, err);
+        resolve(url);
+      },
+      ontimeout: () => {
+        log.debug('t.co resolve timeout:', url);
+        resolve(url);
+      },
+    });
+  });
+}
+
+/** テキスト中の t.co URL をすべて最終 URL に置換して返す。 */
+async function resolveTcoUrlsInText(text) {
+  const matches = [...new Set(text.match(/https:\/\/t\.co\/\w+/g) || [])];
+  log.debug('t.co URLs in text:', matches);
+  if (!matches.length) return text;
+  const resolved = await Promise.all(matches.map(resolveTcoUrl));
+  let result = text;
+  for (let i = 0; i < matches.length; i++) {
+    result = result.replaceAll(matches[i], resolved[i]);
+  }
+  return result;
+}
+
 /**
  * Notion DB クエリ。has_more の間ページネーションし、
  * すべての post ID (string[]) を返す。
@@ -270,7 +330,7 @@ async function notionQueryAllPostIds() {
     if (cursor) body.start_cursor = cursor;
     const result = await gmFetch(
       'POST',
-      `/databases/${CONFIG.DATABASE_ID}/query`,
+      `/data_sources/${CONFIG.DATA_SOURCE_ID}/query`,
       body,
     );
     for (const p of result.results) {
@@ -282,12 +342,31 @@ async function notionQueryAllPostIds() {
   return ids;
 }
 
-/** Notion DB に新規ページを作成し、{ id } を返す。 */
-function notionCreatePage(properties) {
-  return gmFetch('POST', '/pages', {
-    parent: { database_id: CONFIG.DATABASE_ID },
+/** Notion DB に新規ページを作成し、{ id } を返す。children を指定するとページ作成時にブロックも追加する。 */
+function notionCreatePage(properties, children) {
+  const body = {
+    parent: { type: 'data_source_id', data_source_id: CONFIG.DATA_SOURCE_ID },
     properties,
-  });
+  };
+  if (children?.length) body.children = children;
+  return gmFetch('POST', '/pages', body);
+}
+
+function makeGmHandlers(resolve, reject) {
+  return {
+    onload: (res) => {
+      if (res.status >= 200 && res.status < 300) {
+        try {
+          resolve(JSON.parse(res.responseText));
+        } catch {
+          resolve(res.responseText);
+        }
+      } else {
+        reject({ status: res.status, body: res.responseText });
+      }
+    },
+    onerror: (err) => reject({ status: 0, raw: err }),
+  };
 }
 
 /**
@@ -306,18 +385,7 @@ function notionCreateFileUpload(filename, arrayBuffer, contentType) {
         'Content-Disposition': `attachment; filename="${filename}"`,
       },
       data: arrayBuffer,
-      onload: (res) => {
-        if (res.status >= 200 && res.status < 300) {
-          try {
-            resolve(JSON.parse(res.responseText));
-          } catch {
-            resolve(res.responseText);
-          }
-        } else {
-          reject({ status: res.status, body: res.responseText });
-        }
-      },
-      onerror: (err) => reject({ status: 0, raw: err }),
+      ...makeGmHandlers(resolve, reject),
     });
   });
 }
@@ -345,18 +413,7 @@ function notionCompleteFileUpload(
         'Notion-Version': CONFIG.NOTION_VERSION,
       },
       data: formData,
-      onload: (res) => {
-        if (res.status >= 200 && res.status < 300) {
-          try {
-            resolve(JSON.parse(res.responseText));
-          } catch {
-            resolve(res.responseText);
-          }
-        } else {
-          reject({ status: res.status, body: res.responseText });
-        }
-      },
-      onerror: (err) => reject({ status: 0, raw: err }),
+      ...makeGmHandlers(resolve, reject),
     });
   });
 }
@@ -415,35 +472,58 @@ function extractDatetime(article) {
   return times.length ? times[0].getAttribute('datetime') : null;
 }
 
-function extractAuthor(article) {
-  const blocks = outerOnly(article, '[data-testid="User-Name"]');
-  if (!blocks.length) return null;
-  const block = blocks[0];
-
+function parseAuthorBlock(block) {
   let displayName = '';
   let username = '';
-
-  // span テキストから displayName と @username を分離
   for (const span of block.querySelectorAll('span')) {
     const t = span.textContent.trim();
     if (!t) continue;
     if (t.startsWith('@') && !username) username = t;
     else if (!displayName && !t.startsWith('@')) displayName = t;
   }
-
-  // フォールバック: <a> タグのテキスト
   if (!displayName) {
     const links = block.querySelectorAll('a');
     if (links[0]) displayName = links[0].textContent.trim();
     if (links[1] && !username) username = links[1].textContent.trim();
   }
-
   return { displayName, username };
+}
+
+function extractAuthor(article) {
+  const blocks = outerOnly(article, '[data-testid="User-Name"]');
+  if (!blocks.length) return null;
+  return parseAuthorBlock(blocks[0]);
+}
+
+function extractCardUrls(article) {
+  const cards = outerOnly(article, '[data-testid="card.wrapper"]');
+  return cards
+    .map((card) => {
+      const a = card.querySelector('a[href]');
+      return a ? a.getAttribute('href') : null;
+    })
+    .filter(Boolean);
+}
+
+// innerText だと <a> 内の aria-hidden スパンで URL が複数行に分割されるため DOM を手動ウォークする。
+// t.co リンクのみ href を使用し、ハッシュタグ・メンションは子ノードのテキストをそのまま返す。
+function walkTweetText(node) {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+  if (node.nodeName === 'IMG') return node.getAttribute('alt') || '';
+  if (node.nodeName === 'A') {
+    const href = node.getAttribute('href') || '';
+    return href.startsWith('https://t.co/')
+      ? href
+      : Array.from(node.childNodes).map(walkTweetText).join('');
+  }
+  if (node.nodeName === 'BR') return '\n';
+  return Array.from(node.childNodes).map(walkTweetText).join('');
 }
 
 function extractBody(article) {
   const els = outerOnly(article, '[data-testid="tweetText"]');
-  return els.length ? els[0].innerText || els[0].textContent || '' : '';
+  if (!els.length) return '';
+  return walkTweetText(els[0]);
 }
 
 function extractImages(article) {
@@ -477,22 +557,16 @@ function extractQuotedPost(article) {
   const textEl = container.querySelector('[data-testid="tweetText"]');
   if (!textEl) return null;
 
-  const body = textEl.innerText || textEl.textContent || '';
+  const body = walkTweetText(textEl);
 
   const authorBlock = container.querySelector('[data-testid="User-Name"]');
   let authorStr = '';
   if (authorBlock) {
-    let name = '',
-      user = '';
-    for (const span of authorBlock.querySelectorAll('span')) {
-      const t = span.textContent.trim();
-      if (t.startsWith('@') && !user) user = t;
-      else if (!name && t) name = t;
-    }
-    if (name || user) authorStr = `${name} (${user}): `;
+    const { displayName, username } = parseAuthorBlock(authorBlock);
+    if (displayName || username) authorStr = `${displayName} (${username}): `;
   }
 
-  return `> ${authorStr}${body}` || null;
+  return `${authorStr}${body}` || null;
 }
 
 /** 記事全体をスクレイプして TweetData を返す。URL 取得失敗時は null。 */
@@ -506,6 +580,7 @@ function scrapeArticle(article) {
     datetime: extractDatetime(article),
     author: author ? `${author.displayName} (${author.username})` : '',
     body: extractBody(article),
+    cardUrls: extractCardUrls(article),
     imageUrls: extractImages(article),
     quotedPost: extractQuotedPost(article),
   };
@@ -544,7 +619,7 @@ async function uploadImages(imageUrls) {
   for (let i = 0; i < imageUrls.length; i++) {
     const url = imageUrls[i];
     const mime = mimeFromUrl(url);
-    const filename = `tweet-img-${i}.${extFromMime(mime)}`;
+    const filename = `post-img-${i}.${extFromMime(mime)}`;
     let fileObj;
 
     try {
@@ -576,38 +651,147 @@ function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/**
+ * 本文末尾の URL を抜き出して (cleanedBody, linkUrls) を返す。
+ * URL が見つからない場合は linkUrl: null を返す。
+ */
+function extractLinksFromBody(body) {
+  const urlRe = /https?:\/\/\S+/g;
+  const matches = Array.from(body.matchAll(urlRe));
+
+  if (matches.length === 0) return { body, linkUrls: [] };
+
+  const linkUrls = matches.map((m) => m[0]);
+  const cleaned = body.replace(urlRe, '').replace(/\s+/g, ' ').trim();
+
+  return { body: cleaned, linkUrls };
+}
+
 function extractPostId(url) {
   return url?.match(/\/status\/(\d+)/)?.[1] ?? url;
 }
 
-function buildNotionProperties(tweetData, fileObjects) {
-  const postId = extractPostId(tweetData.url);
+/**
+ * uploadImages() が返すファイルオブジェクト配列を Notion image ブロック配列に変換する。
+ * 1 枚: 単一 image ブロック
+ * 2 枚以上: column_list > column[] > image ブロック (横並びレイアウト)
+ */
+function buildImageBlocks(fileObjects) {
+  const blocks = fileObjects.map((fo) => {
+    if (fo.type === 'file_upload') {
+      return {
+        object: 'block',
+        type: 'image',
+        image: { type: 'file_upload', file_upload: { id: fo.file_upload.id } },
+      };
+    }
+    return {
+      object: 'block',
+      type: 'image',
+      image: { type: 'external', external: { url: fo.external.url } },
+    };
+  });
+
+  if (blocks.length <= 1) return blocks;
+
+  return [
+    {
+      object: 'block',
+      type: 'column_list',
+      column_list: {
+        children: blocks.map((b) => ({
+          object: 'block',
+          type: 'column',
+          column: { children: [b] },
+        })),
+      },
+    },
+  ];
+}
+
+/**
+ * ページコンテンツとして追加するブロック配列を組み立てる。
+ */
+function buildPageBlocks(postData, imageBlocks, linkUrls) {
+  const blocks = [];
+
+  blocks.push({
+    object: 'block',
+    type: 'paragraph',
+    paragraph: {
+      rich_text: [
+        {
+          type: 'text',
+          text: { content: truncate(postData.body, 2000), link: null },
+        },
+      ],
+      color: 'default',
+    },
+  });
+
+  if (postData.quotedPost) {
+    blocks.push({
+      object: 'block',
+      type: 'quote',
+      quote: {
+        rich_text: [
+          {
+            type: 'text',
+            text: { content: truncate(postData.quotedPost, 2000) },
+          },
+        ],
+        color: 'default',
+      },
+    });
+  }
+
+  blocks.push(...imageBlocks);
+
+  for (const url of linkUrls) {
+    blocks.push({
+      object: 'block',
+      type: 'bookmark',
+      bookmark: { caption: [], url },
+    });
+  }
+
+  const lastType = blocks[blocks.length - 1]?.type;
+  if (lastType && !['bookmark', 'image', 'column_list'].includes(lastType)) {
+    blocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: { rich_text: [], color: 'default' },
+    });
+  }
+
+  return blocks;
+}
+
+function buildNotionProperties(postData) {
+  const postId = extractPostId(postData.url);
   const props = {
     Title: {
-      title: [{ text: { content: truncate(tweetData.body, 50) } }],
+      title: [{ text: { content: truncate(postData.body, 50) } }],
     },
     URL: {
-      url: tweetData.url,
+      url: postData.url,
     },
     ID: {
       rich_text: [{ text: { content: postId } }],
     },
     Author: {
-      rich_text: [{ text: { content: tweetData.author } }],
+      rich_text: [{ text: { content: postData.author } }],
     },
     Body: {
-      rich_text: [{ text: { content: truncate(tweetData.body, 2000) } }],
-    },
-    Images: {
-      files: fileObjects,
+      rich_text: [{ text: { content: truncate(postData.body, 2000) } }],
     },
     QuotedPost: {
-      rich_text: [{ text: { content: tweetData.quotedPost || '' } }],
+      rich_text: [{ text: { content: postData.quotedPost || '' } }],
     },
   };
 
-  if (tweetData.datetime) {
-    props.PostedAt = { date: { start: tweetData.datetime } };
+  if (postData.datetime) {
+    props.PostedAt = { date: { start: postData.datetime } };
   }
 
   return props;
@@ -685,9 +869,7 @@ function createSaveButton(article, isSaved) {
   btn.appendChild(label);
 
   if (isSaved) {
-    btn.dataset.notionSave = 'saved';
-    btn.disabled = true;
-    label.textContent = '✅';
+    setButtonState(btn, 'saved');
   } else {
     btn.dataset.notionSave = 'pending';
     label.textContent = '保存';
@@ -702,22 +884,42 @@ function createSaveButton(article, isSaved) {
 }
 
 async function handleSaveClick(article, button) {
-  const tweetData = scrapeArticle(article);
-  if (!tweetData) {
+  const postData = scrapeArticle(article);
+  if (!postData) {
     setButtonState(button, 'error');
     return;
   }
 
   setButtonState(button, 'saving');
   try {
-    const { fileObjects, hasFallback } = await uploadImages(
-      tweetData.imageUrls,
+    const { fileObjects, hasFallback } = await uploadImages(postData.imageUrls);
+    const imageBlocks = buildImageBlocks(fileObjects);
+
+    postData.body = await resolveTcoUrlsInText(postData.body);
+
+    // カード URL は本文に追記せず bookmark ブロックとして使用する
+    // card.wrapper がない場合は本文末尾の URL を抽出して bookmark に使い、ブロック本文からは削除する
+    // プロパティの Body には URL を残すため postData.body は変更しない
+    let linkUrls = [];
+    let blockBody = postData.body;
+    if (postData.cardUrls.length > 0) {
+      linkUrls = await Promise.all(postData.cardUrls.map(resolveTcoUrl));
+    } else {
+      const extracted = extractLinksFromBody(postData.body);
+      blockBody = extracted.body;
+      linkUrls = extracted.linkUrls;
+    }
+
+    const blocks = buildPageBlocks(
+      { ...postData, body: blockBody },
+      imageBlocks,
+      linkUrls,
     );
-    const properties = buildNotionProperties(tweetData, fileObjects);
-    await notionCreatePage(properties);
-    state.savedIds.add(extractPostId(tweetData.url));
+    const properties = buildNotionProperties(postData);
+    await notionCreatePage(properties, blocks);
+    state.savedIds.add(extractPostId(postData.url));
     setButtonState(button, hasFallback ? 'saved_partial' : 'saved');
-    log.debug('Saved:', tweetData.url);
+    log.debug('Saved:', postData.url);
     if (hasFallback) {
       showToast(
         '一部の画像のアップロードに失敗しました。外部URL参照で保存されましたが、将来リンク切れの可能性があります。',
@@ -745,7 +947,7 @@ function injectButton(article) {
   article.dataset.notionInjected = '1';
 
   const url = extractTweetUrl(article);
-  if (!url) return; // 広告・プロモーションツイート等
+  if (!url) return; // 広告・プロモーションポスト等
 
   // outerOnly で引用ポスト内の [role="group"] を除外して外側のアクションバーを取得
   const actionBars = outerOnly(article, '[role="group"]');
@@ -804,7 +1006,7 @@ async function loadSavedIds() {
     log.debug('Loaded', state.savedIds.size, 'saved post IDs');
   } catch (err) {
     log.warn(
-      'Failed to load saved IDs (continuing without duplicate check):',
+      `Failed to load saved IDs (status: ${err?.status ?? '?'}, body: ${err?.body ?? err?.message ?? err}):`,
       err,
     );
   }
@@ -818,7 +1020,7 @@ async function init() {
 
   log.debug('Initializing...');
 
-  // 既存ツイートに先にボタンを注入しておき、ready 後に ✅ を更新する
+  // 既存ポストに先にボタンを注入しておき、ready 後に ✅ を更新する
   startObserver();
   document
     .querySelectorAll('article[data-testid="tweet"]')
