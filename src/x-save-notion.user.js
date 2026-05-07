@@ -99,17 +99,20 @@ function showSettingsModal() {
 
   document.body.appendChild(overlay);
 
-  document.getElementById('nx-token-input').value = GM_getValue(LS.TOKEN, '');
-  document.getElementById('nx-dbid-input').value = GM_getValue(LS.DS_ID, '');
-  document.getElementById('nx-debug-input').checked = GM_getValue(
-    LS.DEBUG,
-    false,
-  );
+  const tokenInput = document.getElementById('nx-token-input');
+  const dbidInput = document.getElementById('nx-dbid-input');
+  const debugInput = document.getElementById('nx-debug-input');
+  const errorEl = document.getElementById('nx-settings-error');
+  const saveBtn = document.getElementById('nx-save-btn');
+  const cancelBtn = document.getElementById('nx-cancel-btn');
 
-  document.getElementById('nx-save-btn').addEventListener('click', () => {
-    const token = document.getElementById('nx-token-input').value.trim();
-    const dbId = document.getElementById('nx-dbid-input').value.trim();
-    const errorEl = document.getElementById('nx-settings-error');
+  tokenInput.value = GM_getValue(LS.TOKEN, '');
+  dbidInput.value = GM_getValue(LS.DS_ID, '');
+  debugInput.checked = GM_getValue(LS.DEBUG, false);
+
+  saveBtn.addEventListener('click', () => {
+    const token = tokenInput.value.trim();
+    const dbId = dbidInput.value.trim();
     if (!token || !dbId) {
       errorEl.textContent = 'Token と Database ID の両方を入力してください';
       return;
@@ -117,16 +120,14 @@ function showSettingsModal() {
     errorEl.textContent = '';
     GM_setValue(LS.TOKEN, token);
     GM_setValue(LS.DS_ID, dbId);
-    GM_setValue(LS.DEBUG, document.getElementById('nx-debug-input').checked);
+    GM_setValue(LS.DEBUG, debugInput.checked);
     overlay.remove();
     state.savedIds.clear();
     state.ready = false;
     init();
   });
 
-  document
-    .getElementById('nx-cancel-btn')
-    .addEventListener('click', () => overlay.remove());
+  cancelBtn.addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
   });
@@ -351,6 +352,23 @@ function notionCreatePage(properties, children) {
   return gmFetch('POST', '/pages', body);
 }
 
+function makeGmHandlers(resolve, reject) {
+  return {
+    onload: (res) => {
+      if (res.status >= 200 && res.status < 300) {
+        try {
+          resolve(JSON.parse(res.responseText));
+        } catch {
+          resolve(res.responseText);
+        }
+      } else {
+        reject({ status: res.status, body: res.responseText });
+      }
+    },
+    onerror: (err) => reject({ status: 0, raw: err }),
+  };
+}
+
 /**
  * POST /v1/file_uploads にバイナリを送り { id, upload_url, status } を返す。
  * status は "pending"。upload_url に PUT することで "uploaded" になる。
@@ -367,18 +385,7 @@ function notionCreateFileUpload(filename, arrayBuffer, contentType) {
         'Content-Disposition': `attachment; filename="${filename}"`,
       },
       data: arrayBuffer,
-      onload: (res) => {
-        if (res.status >= 200 && res.status < 300) {
-          try {
-            resolve(JSON.parse(res.responseText));
-          } catch {
-            resolve(res.responseText);
-          }
-        } else {
-          reject({ status: res.status, body: res.responseText });
-        }
-      },
-      onerror: (err) => reject({ status: 0, raw: err }),
+      ...makeGmHandlers(resolve, reject),
     });
   });
 }
@@ -406,18 +413,7 @@ function notionCompleteFileUpload(
         'Notion-Version': CONFIG.NOTION_VERSION,
       },
       data: formData,
-      onload: (res) => {
-        if (res.status >= 200 && res.status < 300) {
-          try {
-            resolve(JSON.parse(res.responseText));
-          } catch {
-            resolve(res.responseText);
-          }
-        } else {
-          reject({ status: res.status, body: res.responseText });
-        }
-      },
-      onerror: (err) => reject({ status: 0, raw: err }),
+      ...makeGmHandlers(resolve, reject),
     });
   });
 }
@@ -476,30 +472,27 @@ function extractDatetime(article) {
   return times.length ? times[0].getAttribute('datetime') : null;
 }
 
-function extractAuthor(article) {
-  const blocks = outerOnly(article, '[data-testid="User-Name"]');
-  if (!blocks.length) return null;
-  const block = blocks[0];
-
+function parseAuthorBlock(block) {
   let displayName = '';
   let username = '';
-
-  // span テキストから displayName と @username を分離
   for (const span of block.querySelectorAll('span')) {
     const t = span.textContent.trim();
     if (!t) continue;
     if (t.startsWith('@') && !username) username = t;
     else if (!displayName && !t.startsWith('@')) displayName = t;
   }
-
-  // フォールバック: <a> タグのテキスト
   if (!displayName) {
     const links = block.querySelectorAll('a');
     if (links[0]) displayName = links[0].textContent.trim();
     if (links[1] && !username) username = links[1].textContent.trim();
   }
-
   return { displayName, username };
+}
+
+function extractAuthor(article) {
+  const blocks = outerOnly(article, '[data-testid="User-Name"]');
+  if (!blocks.length) return null;
+  return parseAuthorBlock(blocks[0]);
 }
 
 function extractCardUrls(article) {
@@ -565,14 +558,8 @@ function extractQuotedPost(article) {
   const authorBlock = container.querySelector('[data-testid="User-Name"]');
   let authorStr = '';
   if (authorBlock) {
-    let name = '',
-      user = '';
-    for (const span of authorBlock.querySelectorAll('span')) {
-      const t = span.textContent.trim();
-      if (t.startsWith('@') && !user) user = t;
-      else if (!name && t) name = t;
-    }
-    if (name || user) authorStr = `${name} (${user}): `;
+    const { displayName, username } = parseAuthorBlock(authorBlock);
+    if (displayName || username) authorStr = `${displayName} (${username}): `;
   }
 
   return `${authorStr}${body}` || null;
@@ -871,9 +858,7 @@ function createSaveButton(article, isSaved) {
   btn.appendChild(label);
 
   if (isSaved) {
-    btn.dataset.notionSave = 'saved';
-    btn.disabled = true;
-    label.textContent = '✅';
+    setButtonState(btn, 'saved');
   } else {
     btn.dataset.notionSave = 'pending';
     label.textContent = '保存';
