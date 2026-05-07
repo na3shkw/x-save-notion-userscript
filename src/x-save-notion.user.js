@@ -264,14 +264,23 @@ function resolveTcoUrl(url) {
       url,
       timeout: 8000,
       onload: (res) => {
-        log.debug('t.co resolve:', url, '→ finalUrl:', res.finalUrl, 'status:', res.status);
+        log.debug(
+          't.co resolve:',
+          url,
+          '→ finalUrl:',
+          res.finalUrl,
+          'status:',
+          res.status,
+        );
         // finalUrl がリダイレクト先を指している場合はそれを使う
         if (res.finalUrl && !res.finalUrl.startsWith('https://t.co/')) {
           resolve(res.finalUrl);
           return;
         }
         // フォールバック: GM がリダイレクトを追跡しなかった場合、meta refresh を解析
-        const meta = res.responseText?.match(/content=["']0;\s*url=([^"'\s>]+)/i);
+        const meta = res.responseText?.match(
+          /content=["']0;\s*url=([^"'\s>]+)/i,
+        );
         if (meta?.[1]) {
           log.debug('t.co resolved via meta refresh:', meta[1]);
           resolve(meta[1]);
@@ -332,12 +341,14 @@ async function notionQueryAllPostIds() {
   return ids;
 }
 
-/** Notion DB に新規ページを作成し、{ id } を返す。 */
-function notionCreatePage(properties) {
-  return gmFetch('POST', '/pages', {
+/** Notion DB に新規ページを作成し、{ id } を返す。children を指定するとページ作成時にブロックも追加する。 */
+function notionCreatePage(properties, children) {
+  const body = {
     parent: { type: 'data_source_id', data_source_id: CONFIG.DATA_SOURCE_ID },
     properties,
-  });
+  };
+  if (children?.length) body.children = children;
+  return gmFetch('POST', '/pages', body);
 }
 
 /**
@@ -649,11 +660,116 @@ function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/**
+ * 本文末尾の URL を抜き出して (cleanedBody, linkUrl) を返す。archiver.py の _extract_url() に対応。
+ * URL が見つからない場合は linkUrl: null を返す。
+ */
+function extractLinkFromBody(body) {
+  const urlRe = /https?:\/\/\S+/g;
+  let lastMatch = null;
+  for (const m of body.matchAll(urlRe)) lastMatch = m;
+  if (!lastMatch) return { body, linkUrl: null };
+  const cleaned = (
+    body.slice(0, lastMatch.index) +
+    body.slice(lastMatch.index + lastMatch[0].length)
+  ).trim();
+  return { body: cleaned, linkUrl: lastMatch[0] };
+}
+
 function extractPostId(url) {
   return url?.match(/\/status\/(\d+)/)?.[1] ?? url;
 }
 
-function buildNotionProperties(tweetData, fileObjects) {
+/**
+ * uploadImages() が返すファイルオブジェクト配列を Notion image ブロック配列に変換する。
+ * 1 枚: 単一 image ブロック
+ * 2 枚以上: column_list > column[] > image ブロック (横並びレイアウト)
+ */
+function buildImageBlocks(fileObjects) {
+  const blocks = fileObjects.map((fo) => {
+    if (fo.type === 'file_upload') {
+      return {
+        object: 'block',
+        type: 'image',
+        image: { type: 'file_upload', file_upload: { id: fo.file_upload.id } },
+      };
+    }
+    return {
+      object: 'block',
+      type: 'image',
+      image: { type: 'external', external: { url: fo.external.url } },
+    };
+  });
+
+  if (blocks.length <= 1) return blocks;
+
+  return [
+    {
+      object: 'block',
+      type: 'column_list',
+      column_list: {
+        children: blocks.map((b) => ({
+          object: 'block',
+          type: 'column',
+          column: { children: [b] },
+        })),
+      },
+    },
+  ];
+}
+
+/**
+ * ページコンテンツとして追加するブロック配列を組み立てる。
+ * notion_archiver.py の build_tweet_blocks() に対応。
+ */
+function buildPageBlocks(tweetData, imageBlocks, linkUrl) {
+  const blocks = [];
+
+  blocks.push({
+    object: 'block',
+    type: 'paragraph',
+    paragraph: {
+      rich_text: [
+        { type: 'text', text: { content: tweetData.body, link: null } },
+      ],
+      color: 'default',
+    },
+  });
+
+  if (tweetData.quotedPost) {
+    blocks.push({
+      object: 'block',
+      type: 'quote',
+      quote: {
+        rich_text: [{ type: 'text', text: { content: tweetData.quotedPost } }],
+        color: 'default',
+      },
+    });
+  }
+
+  blocks.push(...imageBlocks);
+
+  if (linkUrl) {
+    blocks.push({
+      object: 'block',
+      type: 'bookmark',
+      bookmark: { caption: [], url: linkUrl },
+    });
+  }
+
+  const lastType = blocks[blocks.length - 1]?.type;
+  if (lastType && !['bookmark', 'image', 'column_list'].includes(lastType)) {
+    blocks.push({
+      object: 'block',
+      type: 'paragraph',
+      paragraph: { rich_text: [], color: 'default' },
+    });
+  }
+
+  return blocks;
+}
+
+function buildNotionProperties(tweetData) {
   const postId = extractPostId(tweetData.url);
   const props = {
     Title: {
@@ -670,9 +786,6 @@ function buildNotionProperties(tweetData, fileObjects) {
     },
     Body: {
       rich_text: [{ text: { content: truncate(tweetData.body, 2000) } }],
-    },
-    Images: {
-      files: fileObjects,
     },
     QuotedPost: {
       rich_text: [{ text: { content: tweetData.quotedPost || '' } }],
@@ -786,19 +899,30 @@ async function handleSaveClick(article, button) {
     const { fileObjects, hasFallback } = await uploadImages(
       tweetData.imageUrls,
     );
-    // 本文の t.co を解決してから、カード URL が既出でなければ末尾に追記
-    let body = await resolveTcoUrlsInText(tweetData.body);
+    const imageBlocks = buildImageBlocks(fileObjects);
+
+    tweetData.body = await resolveTcoUrlsInText(tweetData.body);
+
+    // カード URL は本文に追記せず bookmark ブロックとして使用する
+    // card.wrapper がない場合は本文末尾の URL を抽出して bookmark に使い、ブロック本文からは削除する
+    // プロパティの Body には URL を残すため tweetData.body は変更しない
+    let linkUrl = null;
+    let blockBody = tweetData.body;
     if (tweetData.cardUrls.length > 0) {
-      const resolvedCardUrls = await Promise.all(tweetData.cardUrls.map(resolveTcoUrl));
-      for (const cardUrl of resolvedCardUrls) {
-        if (!body.includes(cardUrl)) {
-          body = body ? `${body}\n${cardUrl}` : cardUrl;
-        }
-      }
+      linkUrl = await resolveTcoUrl(tweetData.cardUrls[0]);
+    } else {
+      const extracted = extractLinkFromBody(tweetData.body);
+      blockBody = extracted.body;
+      linkUrl = extracted.linkUrl;
     }
-    tweetData.body = body;
-    const properties = buildNotionProperties(tweetData, fileObjects);
-    await notionCreatePage(properties);
+
+    const blocks = buildPageBlocks(
+      { ...tweetData, body: blockBody },
+      imageBlocks,
+      linkUrl,
+    );
+    const properties = buildNotionProperties(tweetData);
+    await notionCreatePage(properties, blocks);
     state.savedIds.add(extractPostId(tweetData.url));
     setButtonState(button, hasFallback ? 'saved_partial' : 'saved');
     log.debug('Saved:', tweetData.url);
