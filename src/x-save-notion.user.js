@@ -15,6 +15,7 @@
 // @connect      api.notion.com
 // @connect      pbs.twimg.com
 // @connect      video.twimg.com
+// @connect      t.co
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -253,6 +254,55 @@ function gmFetchBinary(url) {
         reject({ status: 0, message: 'Binary fetch failed', url, raw: err }),
     });
   });
+}
+
+/** t.co URL をリダイレクト追跡して最終 URL を返す。失敗時は元 URL をそのまま返す。 */
+function resolveTcoUrl(url) {
+  return new Promise((resolve) => {
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url,
+      timeout: 8000,
+      onload: (res) => {
+        log.debug('t.co resolve:', url, '→ finalUrl:', res.finalUrl, 'status:', res.status);
+        // finalUrl がリダイレクト先を指している場合はそれを使う
+        if (res.finalUrl && !res.finalUrl.startsWith('https://t.co/')) {
+          resolve(res.finalUrl);
+          return;
+        }
+        // フォールバック: GM がリダイレクトを追跡しなかった場合、meta refresh を解析
+        const meta = res.responseText?.match(/content=["']0;\s*url=([^"'\s>]+)/i);
+        if (meta?.[1]) {
+          log.debug('t.co resolved via meta refresh:', meta[1]);
+          resolve(meta[1]);
+          return;
+        }
+        log.warn('t.co could not resolve:', url);
+        resolve(url);
+      },
+      onerror: (err) => {
+        log.debug('t.co resolve error:', url, err);
+        resolve(url);
+      },
+      ontimeout: () => {
+        log.debug('t.co resolve timeout:', url);
+        resolve(url);
+      },
+    });
+  });
+}
+
+/** テキスト中の t.co URL をすべて最終 URL に置換して返す。 */
+async function resolveTcoUrlsInText(text) {
+  const matches = [...new Set(text.match(/https:\/\/t\.co\/\w+/g) || [])];
+  log.debug('t.co URLs in text:', matches);
+  if (!matches.length) return text;
+  const resolved = await Promise.all(matches.map(resolveTcoUrl));
+  let result = text;
+  for (let i = 0; i < matches.length; i++) {
+    result = result.replaceAll(matches[i], resolved[i]);
+  }
+  return result;
 }
 
 /**
@@ -729,6 +779,7 @@ async function handleSaveClick(article, button) {
     const { fileObjects, hasFallback } = await uploadImages(
       tweetData.imageUrls,
     );
+    tweetData.body = await resolveTcoUrlsInText(tweetData.body);
     const properties = buildNotionProperties(tweetData, fileObjects);
     await notionCreatePage(properties);
     state.savedIds.add(extractPostId(tweetData.url));
