@@ -558,7 +558,7 @@ function extractQuotedPost(article) {
     if (name || user) authorStr = `${name} (${user}): `;
   }
 
-  return `> ${authorStr}${body}` || null;
+  return `${authorStr}${body}` || null;
 }
 
 /** 記事全体をスクレイプして TweetData を返す。URL 取得失敗時は null。 */
