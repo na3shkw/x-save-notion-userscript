@@ -721,7 +721,10 @@ function buildPageBlocks(postData, imageBlocks, linkUrls) {
     type: 'paragraph',
     paragraph: {
       rich_text: [
-        { type: 'text', text: { content: truncate(postData.body, 2000), link: null } },
+        {
+          type: 'text',
+          text: { content: truncate(postData.body, 2000), link: null },
+        },
       ],
       color: 'default',
     },
@@ -732,7 +735,12 @@ function buildPageBlocks(postData, imageBlocks, linkUrls) {
       object: 'block',
       type: 'quote',
       quote: {
-        rich_text: [{ type: 'text', text: { content: truncate(postData.quotedPost, 2000) } }],
+        rich_text: [
+          {
+            type: 'text',
+            text: { content: truncate(postData.quotedPost, 2000) },
+          },
+        ],
         color: 'default',
       },
     });
