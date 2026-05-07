@@ -652,19 +652,19 @@ function truncate(s, n) {
 }
 
 /**
- * 本文末尾の URL を抜き出して (cleanedBody, linkUrl) を返す。archiver.py の _extract_url() に対応。
+ * 本文末尾の URL を抜き出して (cleanedBody, linkUrls) を返す。
  * URL が見つからない場合は linkUrl: null を返す。
  */
-function extractLinkFromBody(body) {
+function extractLinksFromBody(body) {
   const urlRe = /https?:\/\/\S+/g;
-  let lastMatch = null;
-  for (const m of body.matchAll(urlRe)) lastMatch = m;
-  if (!lastMatch) return { body, linkUrl: null };
-  const cleaned = (
-    body.slice(0, lastMatch.index) +
-    body.slice(lastMatch.index + lastMatch[0].length)
-  ).trim();
-  return { body: cleaned, linkUrl: lastMatch[0] };
+  const matches = Array.from(body.matchAll(urlRe));
+
+  if (matches.length === 0) return { body, linkUrls: [] };
+
+  const linkUrls = matches.map((m) => m[0]);
+  const cleaned = body.replace(urlRe, '').replace(/\s+/g, ' ').trim();
+
+  return { body: cleaned, linkUrls };
 }
 
 function extractPostId(url) {
@@ -711,7 +711,6 @@ function buildImageBlocks(fileObjects) {
 
 /**
  * ページコンテンツとして追加するブロック配列を組み立てる。
- * notion_archiver.py の build_tweet_blocks() に対応。
  */
 function buildPageBlocks(postData, imageBlocks, linkUrls) {
   const blocks = [];
@@ -906,9 +905,9 @@ async function handleSaveClick(article, button) {
     if (postData.cardUrls.length > 0) {
       linkUrls = await Promise.all(postData.cardUrls.map(resolveTcoUrl));
     } else {
-      const extracted = extractLinkFromBody(postData.body);
+      const extracted = extractLinksFromBody(postData.body);
       blockBody = extracted.body;
-      if (extracted.linkUrl) linkUrls = [extracted.linkUrl];
+      linkUrls = extracted.linkUrls;
     }
 
     const blocks = buildPageBlocks(
