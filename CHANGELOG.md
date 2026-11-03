@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.1](https://github.com/na3shkw/x-save-notion-userscript/compare/v0.2.0...v0.2.1) - 2026-11-03
+
+### Other Changes
+- GitHub Actions の workflow lockfile を導入 by @na3shkw in https://github.com/na3shkw/x-save-notion-userscript/pull/4
+
 ## [v0.2.0](https://github.com/na3shkw/x-save-notion-userscript/compare/v0.1.0...v0.2.0) - 2026-05-07
 ### Other Changes
 - 保存機能の強化と Notion API 2025-09-03 対応 by @na3shkw in https://github.com/na3shkw/x-save-notion-userscript/pull/2
